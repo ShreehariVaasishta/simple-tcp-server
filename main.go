@@ -1,46 +1,82 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
+	"log"
 	"net"
-	"os"
-	"strings"
 )
 
-func main() {
-	arguments := os.Args
+type Message struct {
+	from    string
+	payload []byte
+}
+type Server struct {
+	listenAddr string
+	ln         net.Listener
+	quitch     chan struct{}
+	msgch      chan Message
+}
 
-	if len(arguments) == 1 {
-		fmt.Println("\nPlease provide host:port.")
-		return
+func NewServer(listenAddr string) *Server {
+	return &Server{
+		listenAddr: listenAddr,
+		quitch:     make(chan struct{}),
+		msgch:      make(chan Message),
 	}
+}
 
-	CONNECT := arguments[1]
-
-	x1 := strings.Split(CONNECT, ":")
-	if len(x1) != 2 {
-		fmt.Println("!!! Invalid host:port arguement. !!!")
-		return
-	}
-
-	c, err := net.Dial("tcp", CONNECT)
+func (s *Server) Start() error {
+	ln, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
+	defer ln.Close()
+	s.ln = ln
+	go s.acceptLoop()
+	<-s.quitch
+	close(s.msgch)
+	return nil
+}
+
+func (s *Server) acceptLoop() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			fmt.Println("Accept error:", err)
+			continue
+		}
+		fmt.Println("New connection to the server: ", conn.RemoteAddr())
+		go s.readLoop(conn)
+
+	}
+}
+
+func (s *Server) readLoop(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 2048)
 
 	for {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print(">> ")
-		text, _ := reader.ReadString('\n')
-		fmt.Fprintf(c, text+"\n")
-
-		message, _ := bufio.NewReader(c).ReadString('\n')
-		fmt.Print("->: " + message)
-		if strings.TrimSpace(string(text)) == "STOP" {
-			fmt.Println("TCP client exiting...")
-			return
+		n, err := conn.Read(buf)
+		if err != nil {
+			fmt.Println("Read error:", err)
+			continue
 		}
+
+		s.msgch <- Message{
+			from:    conn.RemoteAddr().String(),
+			payload: buf[:n],
+		}
+
+		conn.Write([]byte("Thank your for message."))
 	}
+}
+
+func main() {
+	server := NewServer(":8082")
+	go func() {
+		for msg := range server.msgch {
+			fmt.Printf("Received Message from connection (%s):%s\n", msg.from, msg.payload)
+		}
+	}()
+	log.Fatal(server.Start())
 }
